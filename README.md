@@ -73,7 +73,7 @@ ORDER_ITEMS {
         int quantity
         decimal price
     }
-
+```
 
 ## 📖 API Endpoints Documentation
 
