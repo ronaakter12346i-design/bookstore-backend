@@ -66,6 +66,15 @@ erDiagram
         int quantity
         decimal price
     }
+ORDER_ITEMS {
+        int id PK
+        int order_id FK
+        int book_id FK
+        int quantity
+        decimal price
+    }
+
+
 ## 📖 API Endpoints Documentation
 
 ### 🔑 Authentication
@@ -160,24 +169,7 @@ erDiagram
 {
   "error": "Order not found"
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+```
 ## ⚙️ How to Run Locally
 
 1. **Clone the repository:**
