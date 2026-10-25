@@ -1,246 +1,231 @@
 const express = require('express');
-const cors = require('cors');
+const { Pool } = require('pg');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-require('dotenv').config();
-const pool = require('./db');
+const cors = require('cors');
 
 const app = express();
-const PORT = process.env.PORT || 5001;
-
-app.use(cors());
 app.use(express.json());
+app.use(cors());
 
-// Test Route
-app.get('/', (req, res) => {
-    res.send('Online Bookstore API is running...');
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: { rejectUnauthorized: false }
 });
 
-// --- USER AUTHENTICATION ROUTES ---
+const JWT_SECRET = process.env.JWT_SECRET || 'your_jwt_secret_key';
 
-// 1. User Registration
+// Auth Middleware
+const authenticateToken = (req, res, next) => {
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1];
+  if (!token) return res.status(401).json({ error: 'Access token required' });
+
+  jwt.verify(token, JWT_SECRET, (err, user) => {
+    if (err) return res.status(403).json({ error: 'Invalid or expired token' });
+    req.user = user;
+    next();
+  });
+};
+
+// --- AUTH ROUTES ---
 app.post('/api/auth/register', async (req, res) => {
-    try {
-        const { name, email, password } = req.body;
-
-        // Check if user already exists
-        const user = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
-        if (user.rows.length > 0) {
-            return res.status(400).json({ message: "User already exists with this email" });
-        }
-
-        // Hash password
-        const salt = await bcrypt.genSalt(10);
-        const hashedPassword = await bcrypt.hash(password, salt);
-
-        // Insert new user
-        const newUser = await pool.query(
-            'INSERT INTO users (name, email, password) VALUES ($1, $2, $3) RETURNING id, name, email, role',
-            [name, email, hashedPassword]
-        );
-
-        res.status(201).json({
-            message: "User registered successfully",
-            user: newUser.rows[0]
-        });
-    } catch (err) {
-        console.error(err.message);
-        res.status(500).send("Server Error");
-    }
+  try {
+    const { name, email, password, role } = req.body;
+    const hashedPassword = await bcrypt.hash(password, 10);
+    const result = await pool.query(
+      'INSERT INTO users (name, email, password, role) VALUES ($1, $2, $3, $4) RETURNING id, name, email, role, created_at',
+      [name, email, hashedPassword, role || 'customer']
+    );
+    res.status(201).json({ message: 'User registered successfully', user: result.rows[0] });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
-// 2. User Login
 app.post('/api/auth/login', async (req, res) => {
-    try {
-        const { email, password } = req.body;
+  try {
+    const { email, password } = req.body;
+    const result = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
+    if (result.rows.length === 0) return res.status(400).json({ error: 'User not found' });
 
-        // Check if user exists
-        const user = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
-        if (user.rows.length === 0) {
-            return res.status(400).json({ message: "Invalid Credentials" });
-        }
+    const user = result.rows[0];
+    const validPassword = await bcrypt.compare(password, user.password);
+    if (!validPassword) return res.status(400).json({ error: 'Invalid password' });
 
-        // Verify password
-        const validPassword = await bcrypt.compare(password, user.rows[0].password);
-        if (!validPassword) {
-            return res.status(400).json({ message: "Invalid Credentials" });
-        }
-
-        // Generate JWT Token
-        const token = jwt.sign(
-            { id: user.rows[0].id, role: user.rows[0].role },
-            process.env.JWT_SECRET || 'fallback_secret',
-            { expiresIn: '1h' }
-        );
-
-        res.json({
-            message: "Login successful",
-            token,
-            user: {
-                id: user.rows[0].id,
-                name: user.rows[0].name,
-                email: user.rows[0].email,
-                role: user.rows[0].role
-            }
-        });
-    } catch (err) {
-        console.error(err.message);
-        res.status(500).send("Server Error");
-    }
+    const token = jwt.sign({ id: user.id, email: user.email, role: user.role }, JWT_SECRET, { expiresIn: '1d' });
+    res.json({ message: 'Login successful', token, user: { id: user.id, name: user.name, email: user.email, role: user.role } });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
-
-
-// --- BOOKS ROUTES ---
-
-// Get all books
-app.get('/api/books', async (req, res) => {
-    try {
-        const result = await pool.query('SELECT * FROM books');
-        res.json(result.rows);
-    } catch (err) {
-        console.error(err.message);
-        res.status(500).send("Server Error");
-    }
-});
-
-// Add a book
-app.post('/api/books', async (req, res) => {
-    try {
-        const { title, author, price, stock, category_id } = req.body;
-        const newBook = await pool.query(
-            'INSERT INTO books (title, author, price, stock, category_id) VALUES ($1, $2, $3, $4, $5) RETURNING *',
-            [title, author, price, stock, category_id]
-        );
-        res.json(newBook.rows[0]);
-    } catch (err) {
-        console.error(err.message);
-        res.status(500).send("Server Error");
-    }
-});
-
-// Get a single book by ID
-app.get('/api/books/:id', async (req, res) => {
-    try {
-        const { id } = req.params;
-        const book = await pool.query('SELECT * FROM books WHERE id = $1', [id]);
-
-        if (book.rows.length === 0) {
-            return res.status(404).json({ message: "Book not found" });
-        }
-
-        res.json(book.rows[0]);
-    } catch (err) {
-        console.error(err.message);
-        res.status(500).send("Server Error");
-    }
-});
-
-// Update a book by ID
-app.put('/api/books/:id', async (req, res) => {
-    try {
-        const { id } = req.params;
-        const { title, author, price, stock, category_id } = req.body;
-        const updateBook = await pool.query(
-            'UPDATE books SET title = $1, author = $2, price = $3, stock = $4, category_id = $5 WHERE id = $6 RETURNING *',
-            [title, author, price, stock, category_id, id]
-        );
-
-        if (updateBook.rows.length === 0) {
-            return res.status(404).json({ message: "Book not found" });
-        }
-
-        res.json({ message: "Book updated successfully", book: updateBook.rows[0] });
-    } catch (err) {
-        console.error(err.message);
-        res.status(500).send("Server Error");
-    }
-});
-
-// Delete a book by ID
-app.delete('/api/books/:id', async (req, res) => {
-    try {
-        const { id } = req.params;
-        const deleteBook = await pool.query('DELETE FROM books WHERE id = $1 RETURNING *', [id]);
-
-        if (deleteBook.rows.length === 0) {
-            return res.status(404).json({ message: "Book not found" });
-        }
-
-        res.json({ message: "Book deleted successfully" });
-    } catch (err) {
-        console.error(err.message);
-        res.status(500).send("Server Error");
-    }
-});
-
 
 // --- CATEGORIES ROUTES ---
-
-// Get all categories
 app.get('/api/categories', async (req, res) => {
-    try {
-        const result = await pool.query('SELECT * FROM categories');
-        res.json(result.rows);
-    } catch (err) {
-        console.error(err.message);
-        res.status(500).send("Server Error");
+  try {
+    const result = await pool.query('SELECT * FROM categories ORDER BY id ASC');
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/categories', authenticateToken, async (req, res) => {
+  try {
+    const { name } = req.body;
+    const result = await pool.query('INSERT INTO categories (name) VALUES ($1) RETURNING *', [name]);
+    res.status(201).json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// --- BOOKS ROUTES ---
+app.get('/api/books', async (req, res) => {
+  try {
+    const result = await pool.query('SELECT * FROM books ORDER BY id ASC');
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/books/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const result = await pool.query('SELECT * FROM books WHERE id = $1', [id]);
+    if (result.rows.length === 0) return res.status(404).json({ error: 'Book not found' });
+    res.json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/books', authenticateToken, async (req, res) => {
+  try {
+    const { title, author, price, category_id } = req.body;
+    const result = await pool.query(
+      'INSERT INTO books (title, author, price, category_id) VALUES ($1, $2, $3, $4) RETURNING *',
+      [title, author, price, category_id]
+    );
+    res.status(201).json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.put('/api/books/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { title, author, price, category_id } = req.body;
+    const result = await pool.query(
+      'UPDATE books SET title = $1, author = $2, price = $3, category_id = $4 WHERE id = $5 RETURNING *',
+      [title, author, price, category_id, id]
+    );
+    if (result.rows.length === 0) return res.status(404).json({ error: 'Book not found' });
+    res.json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/api/books/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const result = await pool.query('DELETE FROM books WHERE id = $1 RETURNING *', [id]);
+    if (result.rows.length === 0) return res.status(404).json({ error: 'Book not found' });
+    res.json({ message: 'Book deleted successfully' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// --- ORDERS & ORDER_ITEMS ROUTES (Added for 5-table support) ---
+app.post('/api/orders', authenticateToken, async (req, res) => {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const user_id = req.user.id;
+    const { items } = req.body; // Array of { book_id, quantity }
+
+    if (!items || items.length === 0) {
+      return res.status(400).json({ error: 'Order items are required' });
     }
-});
 
-// Add a category
-app.post('/api/categories', async (req, res) => {
-    try {
-        const { name } = req.body;
-        const newCategory = await pool.query(
-            'INSERT INTO categories (name) VALUES ($1) RETURNING *',
-            [name]
-        );
-        res.json(newCategory.rows[0]);
-    } catch (err) {
-        console.error(err.message);
-        res.status(500).send("Server Error");
+    let total_amount = 0;
+    const processedItems = [];
+
+    for (let item of items) {
+      const bookRes = await client.query('SELECT price FROM books WHERE id = $1', [item.book_id]);
+      if (bookRes.rows.length === 0) {
+        throw new Error(`Book with ID ${item.book_id} not found`);
+      }
+      const price = bookRes.rows[0].price;
+      total_amount += price * item.quantity;
+      processedItems.push({ book_id: item.book_id, quantity: item.quantity, price });
     }
-});
 
-// Update a category by ID
-app.put('/api/categories/:id', async (req, res) => {
-    try {
-        const { id } = req.params;
-        const { name } = req.body;
-        const updateCategory = await pool.query(
-            'UPDATE categories SET name = $1 WHERE id = $2 RETURNING *',
-            [name, id]
-        );
+    const orderRes = await client.query(
+      'INSERT INTO orders (user_id, total_amount, status) VALUES ($1, $2, $3) RETURNING *',
+      [user_id, total_amount, 'pending']
+    );
+    const order = orderRes.rows[0];
 
-        if (updateCategory.rows.length === 0) {
-            return res.status(404).json({ message: "Category not found" });
-        }
-
-        res.json({ message: "Category updated successfully", category: updateCategory.rows[0] });
-    } catch (err) {
-        console.error(err.message);
-        res.status(500).send("Server Error");
+    for (let pItem of processedItems) {
+      await client.query(
+        'INSERT INTO order_items (order_id, book_id, quantity, price) VALUES ($1, $2, $3, $4)',
+        [order.id, pItem.book_id, pItem.quantity, pItem.price]
+      );
     }
+
+    await client.query('COMMIT');
+    res.status(201).json({ message: 'Order placed successfully', order: { ...order, items: processedItems } });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
+  }
 });
 
-// Delete a category by ID
-app.delete('/api/categories/:id', async (req, res) => {
-    try {
-        const { id } = req.params;
-        const deleteCategory = await pool.query('DELETE FROM categories WHERE id = $1 RETURNING *', [id]);
+app.get('/api/orders', authenticateToken, async (req, res) => {
+  try {
+    const user_id = req.user.id;
+    const role = req.user.role;
 
-        if (deleteCategory.rows.length === 0) {
-            return res.status(404).json({ message: "Category not found" });
-        }
+    let query = 'SELECT * FROM orders';
+    let params = [];
 
-        res.json({ message: "Category deleted successfully" });
-    } catch (err) {
-        console.error(err.message);
-        res.status(500).send("Server Error");
+    if (role !== 'admin') {
+      query += ' WHERE user_id = $1';
+      params.push(user_id);
     }
+    query += ' ORDER BY created_at DESC';
+
+    const result = await pool.query(query, params);
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
+app.get('/api/orders/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const orderRes = await pool.query('SELECT * FROM orders WHERE id = $1', [id]);
+    if (orderRes.rows.length === 0) return res.status(404).json({ error: 'Order not found' });
 
-app.listen(PORT, () => {
-    console.log(`Server is running on port ${PORT}`);
+    const order = orderRes.rows[0];
+    const itemsRes = await pool.query(
+      'SELECT oi.*, b.title, b.author FROM order_items oi JOIN books b ON oi.book_id = b.id WHERE oi.order_id = $1',
+      [id]
+    );
+
+    res.json({ ...order, items: itemsRes.rows });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
+
+const PORT = process.env.PORT || 5000;
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
