@@ -3,8 +3,8 @@
 A restful API backend for an Online Bookstore Management System built with Node.js, Express, and PostgreSQL. It includes secure user authentication (JWT) and dynamic book, category, and order management features with a full 5-table relational schema.
 
 ## 🚀 Live Deployment
-- **Vercel URL:** [https://bookstore-backend-swart.vercel.app/](https://bookstore-backend-swart.vercel.app/)[cite: 1]
-- **GitHub Repository:** [https://github.com/ronaakter12346i-design/bookstore-backend](https://github.com/ronaakter12346i-design/bookstore-backend)[cite: 1]
+- **Vercel URL:** [https://bookstore-backend-swart.vercel.app/](https://bookstore-backend-swart.vercel.app/)
+- **GitHub Repository:** [https://github.com/ronaakter12346i-design/bookstore-backend](https://github.com/ronaakter12346i-design/bookstore-backend)
 
 ---
 
